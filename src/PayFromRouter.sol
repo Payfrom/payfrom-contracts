@@ -7,6 +7,11 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/**
+ * @title PayFromRouter
+ * @notice Simple payment splitter: 1% to PayFrom, 99% to merchant
+ * @dev Funds never stored in contract - immediately split and sent
+ */
 contract PayFromRouter is ReentrancyGuard, Pausable, Ownable {
     using SafeERC20 for IERC20;
 
@@ -28,11 +33,19 @@ contract PayFromRouter is ReentrancyGuard, Pausable, Ownable {
     error InvalidToken();
     error AmountTooSmall();
 
-    constructor(address _feeWallet, address _owner) Ownable(_owner) { // Initialize Ownable with _owner
+    constructor(address _feeWallet, address _owner) Ownable(_owner) {
+        // Initialize Ownable with _owner
         require(_feeWallet != address(0), "Invalid fee wallet");
         feeWallet = _feeWallet;
     }
 
+    /**
+     * @notice Process payment: split and send immediately
+     * @param paymentId Unique payment ID (from backend)
+     * @param token Token address (USDC, USDT, etc.)
+     * @param amount Total amount (will be split: 1% fee, 99% merchant)
+     * @param merchant Merchant's wallet address
+     */
     function pay(
         bytes32 paymentId,
         address token,
@@ -50,7 +63,14 @@ contract PayFromRouter is ReentrancyGuard, Pausable, Ownable {
         IERC20(token).safeTransfer(feeWallet, fee);
         IERC20(token).safeTransfer(merchant, merchantAmount);
 
-        emit PaymentProcessed(paymentId, msg.sender, merchant, token, amount, fee);
+        emit PaymentProcessed(
+            paymentId,
+            msg.sender,
+            merchant,
+            token,
+            amount,
+            fee
+        );
     }
 
     function pause() external onlyOwner {

@@ -114,18 +114,18 @@ contract DeployScript is Script {
         console.log("Contract owner:", router.owner());
         console.log("Fee wallet:", router.feeWallet());
         console.log("Max payment:", router.maxPayment());
-        console.log("");
-        console.log("=== Verification Command ===");
-        console.log("forge verify-contract", address(router), "src/PayFromRouter.sol:PayFromRouter");
-        console.log("  --chain-id", chainId);
-        console.log("  --constructor-args $(cast abi-encode \"constructor(address,address)\"", feeWallet, ownerAddress, ")");
-        console.log("  --etherscan-api-key $ETHERSCAN_API_KEY");
-        console.log("");
-        console.log("=== Next Steps ===");
-        console.log("1. Verify the contract on block explorer");
-        console.log("2. Test a small payment transaction");
-        console.log("3. Monitor events for successful payments");
-        console.log("4. Add additional tokens if needed:");
-        console.log("   cast send", address(router), "\"addSupportedToken(address)\" <TOKEN_ADDRESS> --private-key $PRIVATE_KEY");
+        console.log("\n");
+        // console.log("=== Verification Command ===");
+        // console.log("forge verify-contract", address(router), "src/PayFromRouter.sol:PayFromRouter");
+        // console.log("  --chain-id", chainId);
+        // console.log("  --constructor-args $(cast abi-encode \"constructor(address,address)\"", feeWallet, ownerAddress, ")");
+        // console.log("  --etherscan-api-key $ETHERSCAN_API_KEY");
+        // console.log("");
+        // console.log("=== Next Steps ===");
+        // console.log("1. Verify the contract on block explorer");
+        // console.log("2. Test a small payment transaction");
+        // console.log("3. Monitor events for successful payments");
+        // console.log("4. Add additional tokens if needed:");
+        // console.log("   cast send", address(router), "\"addSupportedToken(address)\" <TOKEN_ADDRESS> --private-key $PRIVATE_KEY");
     }
 }

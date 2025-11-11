@@ -28,6 +28,7 @@ single_line_statement_blocks = "preserve"
 
 # RPC endpoints (for deployment)
 [rpc_endpoints]
+eth_sepolia = "${ETH_SEPOLIA_RPC}"
 base_sepolia = "${BASE_SEPOLIA_RPC}"
 base_mainnet = "${BASE_MAINNET_RPC}"
 arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC}"
@@ -39,6 +40,7 @@ polygon_mainnet = "${POLYGON_MAINNET_RPC}"
 
 # Etherscan API keys (for verification)
 [etherscan]
+eth_sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.etherscan.io/api" }
 base_sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.basescan.org/api" }
 base = { key = "${ETHERSCAN_API_KEY}", url = "https://api.basescan.org/api" }
 arbitrum_sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.arbiscan.io/api" }

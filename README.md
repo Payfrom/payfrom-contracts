@@ -69,3 +69,10 @@ $ anvil --help
 $ cast --help
 ```
 
+### To add a supported token
+```shell
+$ cast send <ROUTER_ADDRESS> \
+  "addSupportedToken(address)" \
+  <TOKEN_ADDRESS> \
+  --rpc-url <rpc_endpoints> \
+  --private-key $PRIVATE_KEY

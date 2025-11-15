@@ -20,29 +20,22 @@ $ forge test
 $ forge fmt
 ```
 
+### Adding Private Key
+NEVER ADD PRIVATE KEY TO .env file; DO THIS INSTEAD
+```shell
+$ cast wallet import <account_name> --interactive
+```
 
-### Deploy
+###  Deploy (will prompt for password - SECURE!)
 
 ```shell
 $ forge script script/Deploy.s.sol:DeployScript \
-    --rpc-url <rpc_endpoints> \
-    --broadcast \
-    --verify \
-    -vvvv
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
+  --rpc-url <rpc_endpoints> \
+  --account <account_name> \
+  --sender $(cast wallet address --account <account_name>) \
+  --broadcast \
+  --verify \
+  -vvvv
 ```
 
 ### To add a supported token

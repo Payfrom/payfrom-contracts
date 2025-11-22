@@ -1,272 +1,339 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.23;
 
-import {
-    ReentrancyGuard
-} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {
-    SafeERC20,
-    IERC20
-} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /**
  * @title PayFromRouter
- * @notice Secure payment splitter: 1% to PayFrom, 99% to merchant
- * @dev Hardened version with token whitelist, replay protection, and direct transfers
- *
- * Security improvements:
- * - Token whitelist to prevent malicious tokens
- * - Direct transfers (no intermediate holding)
- * - Payment ID replay protection
- * - Configurable fee wallet
- * - Maximum payment limits
- * - Comprehensive event logging
+ * @notice Payment splitter: 1% to PayFrom, 99% to merchant
+ * @dev Supports both same-chain and cross-chain payments
+ * 
+ * Same-chain: User calls pay() directly
+ * Cross-chain: Bridge executor calls executePayment() after bridging funds
  */
-contract PayFromRouter is ReentrancyGuard, Pausable, Ownable {
+contract PayFromRouter is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
+    using ECDSA for bytes32;
 
-    // Configuration
-    address public feeWallet;
-    uint256 public constant FEE_BASIS_POINTS = 100; // 1%
-    uint256 public constant BASIS_POINTS = 10000;
-    uint256 public constant MIN_PAYMENT = 1e6; // 1 USDC/USDT (6 decimals)
-    uint256 public maxPayment = 1_000_000e6; // 1M USDC/USDT max by default
+    // ============ CONSTANTS ============
+    
+    /// @notice Platform fee in basis points (1% = 100 bps)
+    uint256 public constant FEE_BPS = 100;
+    
+    uint256 public constant MIN_PAYMENT = 1e6;
 
-    // Security: Track processed payments to prevent replay attacks
-    mapping(bytes32 => bool) public processedPayments;
+    // ============ IMMUTABLE ============
+    
+    /// @notice Address receiving platform fees
+    address public immutable feeWallet;
+    
+    /// @notice Authorized signer for cross-chain payments (AWS KMS public key)
+    address public immutable authorizedSigner;
 
-    // Security: Token whitelist to prevent malicious tokens
+    // ============ STATE ============
+    
+    /// @notice Whitelisted tokens (USDC, USDT, etc.)
     mapping(address => bool) public supportedTokens;
+    
+    /// @notice Authorized bridge executors (LiFi Diamond, Across, etc.)
+    mapping(address => bool) public authorizedExecutors;
+    
+    /// @notice Processed payment IDs to prevent replay attacks
+    mapping(bytes32 => bool) public processedPayments;
+    
+    /// @notice Emergency pause switch
+    bool public paused;
+    
+    /// @notice Maximum payment amount (anti-whale protection)
+    uint256 public maxPayment = 1_000_000e6; // 1M USDC
 
-    // Events
+    // ============ EVENTS ============
+    
+    /**
+     * @notice Emitted when a payment is processed
+     * @param paymentId Unique payment identifier
+     * @param payer Address that initiated payment
+     * @param merchant Address receiving payment
+     * @param token Token used for payment
+     * @param amount Total payment amount
+     * @param fee Fee amount deducted
+     */
     event PaymentProcessed(
         bytes32 indexed paymentId,
         address indexed payer,
         address indexed merchant,
         address token,
         uint256 amount,
-        uint256 fee,
-        uint256 merchantAmount
+        uint256 fee
     );
+    
+    /**
+     * @notice Emitted when executors are updated
+     * @param executors Array of executor addresses
+     * @param authorized True if authorized, false if revoked
+     */
+    event ExecutorsUpdated(address[] executors, bool authorized);
+    
+    /**
+     * @notice Emitted when supported tokens are updated
+     * @param tokens Array of token addresses
+     * @param supported True if supported, false if removed
+     */
+    event TokensUpdated(address[] tokens, bool supported);
 
-    event TokenAdded(address indexed token);
-    event TokenRemoved(address indexed token);
-    event FeeWalletUpdated(
-        address indexed oldWallet,
-        address indexed newWallet
-    );
-    event MaxPaymentUpdated(uint256 oldMax, uint256 newMax);
-    event ContractPaused(address indexed by);
-    event ContractUnpaused(address indexed by);
-    event EmergencyWithdrawal(
-        address indexed token,
-        uint256 amount,
-        address indexed to
-    );
-
-    // Custom Errors (gas efficient)
-    error InvalidMerchant();
+    // ============ ERRORS ============
+    
+    error Unauthorized();
+    error Paused();
+    error InvalidAddress();
     error InvalidToken();
+    error TokenNotSupported();
     error AmountTooSmall();
     error AmountTooLarge();
-    error TokenNotSupported();
-    error PaymentAlreadyProcessed();
-    error InvalidFeeWallet();
-    error InvalidMaxPayment();
-    error NoTokensToRecover();
+    error AlreadyProcessed();
+    error InvalidSignature();
+    error InsufficientFunds();
 
-    constructor(address _feeWallet, address _owner) Ownable(_owner) {
-        if (_feeWallet == address(0)) revert InvalidFeeWallet();
+    // ============ CONSTRUCTOR ============
+    
+    /**
+     * @notice Initialize the payment router
+     * @param _feeWallet Address to receive platform fees
+     * @param _signer Authorized signer for cross-chain payments
+     * @param _initialExecutors Initial authorized executors (bridges)
+     * @param _initialTokens Initial supported tokens
+     * @param _owner Contract owner address
+     */
+    constructor(
+        address _feeWallet,
+        address _signer,
+        address[] memory _initialExecutors,
+        address[] memory _initialTokens,
+        address _owner
+    ) Ownable(_owner) {
+        if (_feeWallet == address(0) || _signer == address(0))
+            revert InvalidAddress();
+
         feeWallet = _feeWallet;
+        authorizedSigner = _signer;
 
-        emit FeeWalletUpdated(address(0), _feeWallet);
+        // Setup initial executors
+        for (uint256 i = 0; i < _initialExecutors.length; i++) {
+            authorizedExecutors[_initialExecutors[i]] = true;
+        }
+
+        // Setup initial tokens
+        for (uint256 i = 0; i < _initialTokens.length; i++) {
+            supportedTokens[_initialTokens[i]] = true;
+        }
+
+        if (_initialExecutors.length > 0) {
+            emit ExecutorsUpdated(_initialExecutors, true);
+        }
+        if (_initialTokens.length > 0) {
+            emit TokensUpdated(_initialTokens, true);
+        }
     }
 
+    // ============ PAYMENT FUNCTIONS ============
+
     /**
-     * @notice Process payment with secure direct transfers
-     * @param paymentId Unique payment ID (prevents replay attacks)
-     * @param token Whitelisted token address (USDC, USDT, etc.)
-     * @param amount Total amount (will be split: 1% fee, 99% merchant)
-     * @param merchant Merchant's wallet address
-     *
-     * @dev Security features:
-     * - Checks payment hasn't been processed before
-     * - Validates token is whitelisted
-     * - Uses direct transfers (no intermediate holding)
-     * - Protected by reentrancy guard and pause mechanism
+     * @notice Process same-chain payment
+     * @dev User must approve this contract to spend tokens first
+     * @param paymentId Unique payment identifier (prevents replay)
+     * @param token Token address (must be whitelisted)
+     * @param amount Total payment amount
+     * @param merchant Merchant receiving payment
      */
     function pay(
         bytes32 paymentId,
         address token,
         uint256 amount,
         address merchant
-    ) external nonReentrant whenNotPaused {
-        // Validation checks
-        if (merchant == address(0)) revert InvalidMerchant();
-        if (token == address(0)) revert InvalidToken();
+    ) external nonReentrant {
+        // Common validations
+        _validatePayment(paymentId, token, merchant);
+        
+        // Same-chain specific validations
         if (!supportedTokens[token]) revert TokenNotSupported();
         if (amount < MIN_PAYMENT) revert AmountTooSmall();
         if (amount > maxPayment) revert AmountTooLarge();
 
-        // Replay protection: Check if payment already processed
-        if (processedPayments[paymentId]) revert PaymentAlreadyProcessed();
-        processedPayments[paymentId] = true;
+        // Mark as processed
+        _markProcessed(paymentId);
 
-        // Calculate split (merchant gets the remainder to avoid rounding issues)
-        uint256 fee = (amount * FEE_BASIS_POINTS) / BASIS_POINTS;
-        uint256 merchantAmount = amount - fee;
+        // Calculate split
+        (uint256 fee, uint256 merchantAmount) = _calculateSplit(amount);
 
-        // SECURITY FIX: Direct transfers - funds never touch this contract
-        // This prevents any intermediate state exploitation
+        // Transfer from user to fee wallet and merchant
         IERC20(token).safeTransferFrom(msg.sender, feeWallet, fee);
         IERC20(token).safeTransferFrom(msg.sender, merchant, merchantAmount);
 
-        emit PaymentProcessed(
-            paymentId,
-            msg.sender,
-            merchant,
-            token,
-            amount,
-            fee,
-            merchantAmount
+        emit PaymentProcessed(paymentId, msg.sender, merchant, token, amount, fee);
+    }
+
+    /**
+     * @notice Process cross-chain payment (called by bridge executor)
+     * @dev Funds must be in contract before calling this function
+     * @param paymentId Unique payment identifier
+     * @param token Token address
+     * @param expectedAmount Expected amount (allows 5% slippage)
+     * @param merchant Merchant receiving payment
+     * @param signature Backend signature authorizing payment
+     */
+    function executePayment(
+        bytes32 paymentId,
+        address token,
+        uint256 expectedAmount,
+        address merchant,
+        bytes calldata signature
+    ) external nonReentrant {
+        // Check caller is authorized executor (LiFi, Across, etc.)
+        if (!authorizedExecutors[msg.sender]) revert Unauthorized();
+        
+        // Common validations
+        _validatePayment(paymentId, token, merchant);
+        
+        // Verify backend signature
+        _verifySignature(paymentId, merchant, token, expectedAmount, signature);
+
+        // Check funds arrived (allow 5% slippage for bridge fees)
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance < (expectedAmount * 95) / 100) revert InsufficientFunds();
+
+        // Mark as processed
+        _markProcessed(paymentId);
+
+        // Calculate split based on actual received amount
+        (uint256 fee, uint256 merchantAmount) = _calculateSplit(balance);
+
+        // Transfer from contract to fee wallet and merchant
+        IERC20(token).safeTransfer(feeWallet, fee);
+        IERC20(token).safeTransfer(merchant, merchantAmount);
+
+        emit PaymentProcessed(paymentId, msg.sender, merchant, token, balance, fee);
+    }
+
+    // ============ INTERNAL FUNCTIONS ============
+
+    /**
+     * @notice Validate common payment requirements
+     * @param paymentId Payment identifier
+     * @param token Token address
+     * @param merchant Merchant address
+     */
+    function _validatePayment(
+        bytes32 paymentId,
+        address token,
+        address merchant
+    ) internal view {
+        if (paused) revert Paused();
+        if (merchant == address(0) || token == address(0)) revert InvalidAddress();
+        if (processedPayments[paymentId]) revert AlreadyProcessed();
+    }
+
+    /**
+     * @notice Mark payment as processed
+     * @param paymentId Payment identifier
+     */
+    function _markProcessed(bytes32 paymentId) internal {
+        processedPayments[paymentId] = true;
+    }
+
+    /**
+     * @notice Verify backend signature for cross-chain payment
+     * @param paymentId Payment identifier
+     * @param merchant Merchant address
+     * @param token Token address
+     * @param expectedAmount Expected amount
+     * @param signature Backend signature
+     */
+    function _verifySignature(
+        bytes32 paymentId,
+        address merchant,
+        address token,
+        uint256 expectedAmount,
+        bytes calldata signature
+    ) internal view {
+        bytes32 messageHash = keccak256(
+            abi.encodePacked(paymentId, merchant, token, expectedAmount)
         );
+        bytes32 ethSignedHash = messageHash.toEthSignedMessageHash();
+        if (ethSignedHash.recover(signature) != authorizedSigner)
+            revert InvalidSignature();
     }
 
-    // ============ TOKEN WHITELIST MANAGEMENT ============
-
     /**
-     * @notice Add token to whitelist
-     * @param token Token address to whitelist
+     * @notice Calculate payment split (1% fee, 99% merchant)
+     * @param amount Total payment amount
+     * @return fee Platform fee amount
+     * @return merchantAmount Amount for merchant
      */
-    function addSupportedToken(address token) external onlyOwner {
-        if (token == address(0)) revert InvalidToken();
-        supportedTokens[token] = true;
-        emit TokenAdded(token);
+    function _calculateSplit(uint256 amount) internal pure returns (uint256 fee, uint256 merchantAmount) {
+        fee = (amount * FEE_BPS) / 10000;
+        merchantAmount = amount - fee;
+    }
+
+    // ============ ADMIN FUNCTIONS ============
+
+    /**
+     * @notice Update authorized executors
+     * @param executors Array of executor addresses
+     * @param authorized True to authorize, false to revoke
+     */
+    function setExecutors(address[] calldata executors, bool authorized) external onlyOwner {
+        for (uint256 i = 0; i < executors.length; i++) {
+            if (executors[i] == address(0)) revert InvalidAddress();
+            authorizedExecutors[executors[i]] = authorized;
+        }
+        emit ExecutorsUpdated(executors, authorized);
     }
 
     /**
-     * @notice Add multiple tokens to whitelist (gas efficient)
+     * @notice Update supported tokens
      * @param tokens Array of token addresses
+     * @param supported True to support, false to remove
      */
-    function addSupportedTokens(address[] calldata tokens) external onlyOwner {
+    function setTokens(address[] calldata tokens, bool supported) external onlyOwner {
         for (uint256 i = 0; i < tokens.length; i++) {
             if (tokens[i] == address(0)) revert InvalidToken();
-            supportedTokens[tokens[i]] = true;
-            emit TokenAdded(tokens[i]);
+            supportedTokens[tokens[i]] = supported;
         }
+        emit TokensUpdated(tokens, supported);
     }
 
     /**
-     * @notice Remove token from whitelist
-     * @param token Token address to remove
+     * @notice Pause/unpause all payment processing
+     * @param _paused True to pause, false to unpause
      */
-    function removeSupportedToken(address token) external onlyOwner {
-        supportedTokens[token] = false;
-        emit TokenRemoved(token);
-    }
-
-    // ============ CONFIGURATION MANAGEMENT ============
-
-    /**
-     * @notice Update fee wallet address
-     * @param newFeeWallet New fee wallet address
-     */
-    function updateFeeWallet(address newFeeWallet) external onlyOwner {
-        if (newFeeWallet == address(0)) revert InvalidFeeWallet();
-        address oldWallet = feeWallet;
-        feeWallet = newFeeWallet;
-        emit FeeWalletUpdated(oldWallet, newFeeWallet);
+    function setPaused(bool _paused) external onlyOwner {
+        paused = _paused;
     }
 
     /**
      * @notice Update maximum payment amount
-     * @param newMaxPayment New maximum payment amount
+     * @param _maxPayment New maximum payment amount
      */
-    function updateMaxPayment(uint256 newMaxPayment) external onlyOwner {
-        if (newMaxPayment < MIN_PAYMENT) revert InvalidMaxPayment();
-        uint256 oldMax = maxPayment;
-        maxPayment = newMaxPayment;
-        emit MaxPaymentUpdated(oldMax, newMaxPayment);
-    }
-
-    // ============ PAUSE CONTROLS ============
-
-    /**
-     * @notice Pause all payment processing
-     * @dev Can be called by owner in case of emergency
-     */
-    function pause() external onlyOwner {
-        _pause();
-        emit ContractPaused(msg.sender);
+    function setMaxPayment(uint256 _maxPayment) external onlyOwner {
+        maxPayment = _maxPayment;
     }
 
     /**
-     * @notice Unpause payment processing
+     * @notice Emergency withdraw stuck tokens
+     * @dev Can only be called when paused
+     * @param token Token address to withdraw
      */
-    function unpause() external onlyOwner {
-        _unpause();
-        emit ContractUnpaused(msg.sender);
-    }
-
-    // ============ EMERGENCY FUNCTIONS ============
-
-    /**
-     * @notice Emergency token recovery
-     * @dev Should rarely be needed since contract doesn't hold funds
-     * @dev Only recovers tokens accidentally sent to contract
-     * @param token Token address to recover
-     * @param amount Amount to recover (0 = recover all)
-     */
-    function emergencyRecoverToken(
-        address token,
-        uint256 amount
-    ) external onlyOwner {
-        if (token == address(0)) revert InvalidToken();
-
+    function emergencyWithdraw(address token) external onlyOwner {
+        require(paused, "Must pause first");
         uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance == 0) revert NoTokensToRecover();
-
-        uint256 recoverAmount = amount == 0 ? balance : amount;
-        if (recoverAmount > balance) recoverAmount = balance;
-
-        IERC20(token).safeTransfer(owner(), recoverAmount);
-        emit EmergencyWithdrawal(token, recoverAmount, owner());
+        IERC20(token).safeTransfer(owner(), balance);
     }
 
     // ============ VIEW FUNCTIONS ============
-
-    /**
-     * @notice Check if a payment has been processed
-     * @param paymentId Payment ID to check
-     * @return bool True if processed
-     */
-    function isPaymentProcessed(
-        bytes32 paymentId
-    ) external view returns (bool) {
-        return processedPayments[paymentId];
-    }
-
-    /**
-     * @notice Check if token is supported
-     * @param token Token address to check
-     * @return bool True if supported
-     */
-    function isTokenSupported(address token) external view returns (bool) {
-        return supportedTokens[token];
-    }
-
-    /**
-     * @notice Calculate fee and merchant amount for a given payment
-     * @param amount Total payment amount
-     * @return fee Fee amount
-     * @return merchantAmount Amount merchant receives
-     */
-    function calculateSplit(
-        uint256 amount
-    ) external pure returns (uint256 fee, uint256 merchantAmount) {
-        fee = (amount * FEE_BASIS_POINTS) / BASIS_POINTS;
-        merchantAmount = amount - fee;
+    function calculateSplit(uint256 amount) external pure returns (uint256 fee, uint256 merchantAmount) {
+        return _calculateSplit(amount);
     }
 }

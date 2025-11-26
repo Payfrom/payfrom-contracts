@@ -45,3 +45,11 @@ $ cast send <ROUTER_ADDRESS> \
   <TOKEN_ADDRESS> \
   --rpc-url <rpc_endpoints> \
   --private-key $PRIVATE_KEY
+
+  forge script script/Deploy.s.sol:DeployScript \
+  --rpc-url base_sepolia \
+  --account anjolaWallet \
+  --sender $(cast wallet address --account anjolaWallet) \
+  --broadcast \
+  --verify \
+  -vvvv

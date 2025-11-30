@@ -9,7 +9,8 @@ optimizer_runs = 1000  # High runs = lower deployment cost, slightly higher exec
 via_ir = false  # Can enable for better optimization, but slower compilation
 
 remappings = [
-    "@openzeppelin/=lib/openzeppelin-contracts/"
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "@axelar-network/=lib/axelar-gmp-sdk-solidity/"
 ]
 
 # Gas reporting

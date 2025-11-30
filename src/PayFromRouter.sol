@@ -84,10 +84,8 @@ contract PayFromRouter is ReentrancyGuard, Ownable {
         address token,
         uint256 totalAmount,
         address merchant
-        // bytes calldata signature
     ) external nonReentrant {
         _basicChecks(paymentId, token, merchant);
-        // _checkSignature(paymentId, merchant, token, totalAmount, signature);
 
         if (!supportedTokens[token]) revert TokenNotSupported();
         if (totalAmount < MIN_PAYMENT) revert AmountTooSmall();
@@ -122,7 +120,8 @@ contract PayFromRouter is ReentrancyGuard, Ownable {
         address merchant,
         bytes calldata signature
     ) external nonReentrant {
-        if (!authorizedExecutors[msg.sender]) revert Unauthorized();
+        // TEMP: Comment out executor authorization
+        // if (!authorizedExecutors[msg.sender]) revert Unauthorized();
         _basicChecks(paymentId, token, merchant);
         _checkSignature(paymentId, merchant, token, expectedAmount, signature);
 

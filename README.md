@@ -48,8 +48,8 @@ $ cast send <ROUTER_ADDRESS> \
 
   forge script script/Deploy.s.sol:DeployScript \
   --rpc-url base_sepolia \
-  --account anjolaWallet \
-  --sender $(cast wallet address --account anjolaWallet) \
+  --account <wallet-name> \
+  --sender $(cast wallet address --account <wallet-name>) \
   --broadcast \
   --verify \
   -vvvv

@@ -44,12 +44,4 @@ $ cast send <ROUTER_ADDRESS> \
   "addSupportedToken(address)" \
   <TOKEN_ADDRESS> \
   --rpc-url <rpc_endpoints> \
-  --private-key $PRIVATE_KEY
-
-  forge script script/Deploy.s.sol:DeployScript \
-  --rpc-url base_sepolia \
-  --account <wallet-name> \
-  --sender $(cast wallet address --account <wallet-name>) \
-  --broadcast \
-  --verify \
-  -vvvv
+  --private-key $PRIVATE_KEY # only in test, never enter private keys directly use `cast` instead

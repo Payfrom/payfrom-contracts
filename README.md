@@ -17,6 +17,7 @@ $ forge test
 ### Format
 
 ```shell
+
 $ forge fmt
 ```
 
@@ -45,3 +46,29 @@ $ cast send <ROUTER_ADDRESS> \
   <TOKEN_ADDRESS> \
   --rpc-url <rpc_endpoints> \
   --private-key $PRIVATE_KEY # only in test, never enter private keys directly use `cast` instead
+```
+
+## PayfromDelegate (gasless transfers via EIP-7702)
+
+Minimal EIP-7702 delegate contract: a user's EOA signs a one-time authorization
+pointing at this contract's code, after which the backend's sponsor wallet can
+call `executeTransfer` to move that EOA's own token balance (no `approve()`
+needed) while paying the gas itself. `relayer` is `immutable` - EIP-7702
+delegated accounts run this code against their own blank storage, not this
+contract's, so anything the relayer-gating depends on has to be baked into the
+bytecode rather than set via a mutable storage variable. Deploy one instance
+per chain per environment (test/live have separate sponsor wallets, so
+separate deployments).
+
+Set `SPONSOR_WALLET_ADDRESS` in `.env` to the sponsor wallet address for the
+target environment before deploying.
+
+```shell
+$ forge script script/DeployPayfromDelegate.s.sol:DeployPayfromDelegate \
+  --rpc-url <rpc_endpoints> \
+  --account <account_name> \
+  --sender $(cast wallet address --account <account_name>) \
+  --broadcast \
+  --verify \
+  -vvvv
+```

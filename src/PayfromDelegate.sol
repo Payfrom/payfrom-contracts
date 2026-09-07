@@ -21,7 +21,7 @@ contract PayfromDelegate {
     error Expired();
     error InvalidSignature();
     error EmptyBatch();
-    error CallFailed(uint256 index);
+    error CallFailed(uint256 index, bytes reason);
 
     // Authorization comes from the signature alone, not the caller.
     function executeOps(
@@ -48,8 +48,8 @@ contract PayfromDelegate {
             if (c.target == address(this) || c.target == address(0))
                 revert InvalidAddress();
 
-            (bool success, ) = c.target.call{value: c.value}(c.data);
-            if (!success) revert CallFailed(i);
+            (bool success, bytes memory returndata) = c.target.call{value: c.value}(c.data);
+            if (!success) revert CallFailed(i, returndata);
         }
 
         emit OpsExecuted(currentNonce, calls.length);

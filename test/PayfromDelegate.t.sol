@@ -118,10 +118,46 @@ contract PayfromDelegateTest is Test {
         calls[1] = _transferCall(recipient, 10_000e6);
         bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
 
-        vm.expectRevert(abi.encodeWithSelector(PayfromDelegate.CallFailed.selector, 1));
+        // Exact CallFailed(index, reason) payload is covered separately by
+        // test_executeOps_callFailed_carriesUnderlyingRevertReason.
+        vm.expectRevert();
         PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
 
         assertEq(token.allowance(user, recipient), 0);
+    }
+
+    function test_executeOps_callFailed_carriesUnderlyingRevertReason() public {
+        _delegateUser();
+
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = _transferCall(recipient, 10_000e6);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
+
+        bytes memory returndata = _callAndCaptureRevert(calls, sig);
+
+        (uint256 index, bytes memory reason) = abi.decode(
+            _stripSelector(returndata), (uint256, bytes)
+        );
+        assertEq(index, 0);
+        assertGt(reason.length, 0);
+    }
+
+    function _callAndCaptureRevert(
+        PayfromDelegate.Call[] memory calls,
+        bytes memory sig
+    ) internal returns (bytes memory) {
+        (bool success, bytes memory returndata) = address(uint160(user)).call(
+            abi.encodeCall(PayfromDelegate.executeOps, (calls, block.timestamp + 1 hours, sig))
+        );
+        assertFalse(success);
+        return returndata;
+    }
+
+    function _stripSelector(bytes memory data) internal pure returns (bytes memory result) {
+        result = new bytes(data.length - 4);
+        for (uint256 i = 4; i < data.length; i++) {
+            result[i - 4] = data[i];
+        }
     }
 
     function test_executeOps_revertsForWrongSigner() public {

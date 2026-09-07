@@ -185,6 +185,17 @@ contract PayfromDelegateTest is Test {
         PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
     }
 
+    function test_executeOps_revertsWhenCallTargetsZeroAddress() public {
+        _delegateUser();
+
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = PayfromDelegate.Call({target: address(0), value: 0, data: ""});
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
+
+        vm.expectRevert(PayfromDelegate.InvalidAddress.selector);
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
+    }
+
     function test_delegatedAccount_canReceivePlainNativeTransfer() public {
         _delegateUser();
 

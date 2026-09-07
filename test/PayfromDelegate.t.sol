@@ -25,7 +25,7 @@ contract PayfromDelegateTest is Test {
         user = vm.addr(userPrivateKey);
 
         token = new ERC20Mock();
-        delegateImpl = new PayfromDelegate(feeRecipient);
+        delegateImpl = new PayfromDelegate();
 
         token.mint(user, 1_000e6);
     }
@@ -35,126 +35,154 @@ contract PayfromDelegateTest is Test {
     }
 
     function _sign(
-        address token_,
-        address recipient_,
-        uint256 amount,
-        uint256 fee,
-        uint256 nonce,
+        PayfromDelegate.Call[] memory calls,
+        uint256 nonce_,
         uint256 deadline
     ) internal view returns (bytes memory) {
-        bytes32 digest = keccak256(
-            abi.encode(user, block.chainid, token_, recipient_, amount, fee, nonce, deadline)
-        );
+        bytes32 digest = keccak256(abi.encode(user, block.chainid, calls, nonce_, deadline));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(userPrivateKey, digest);
         return abi.encodePacked(r, s, v);
     }
 
-    function test_executeTransfer_movesUserBalance() public {
+    function _transferCall(address to, uint256 amount) internal view returns (PayfromDelegate.Call memory) {
+        return PayfromDelegate.Call({
+            target: address(token),
+            value: 0,
+            data: abi.encodeCall(token.transfer, (to, amount))
+        });
+    }
+
+    function test_executeOps_movesUserBalance() public {
         _delegateUser();
 
-        bytes memory sig = _sign(address(token), recipient, 100e6, 1e6, 0, block.timestamp + 1 hours);
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](2);
+        calls[0] = _transferCall(recipient, 100e6);
+        calls[1] = _transferCall(feeRecipient, 1e6);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
 
         vm.prank(relayer);
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 100e6, 1e6, block.timestamp + 1 hours, sig
-        );
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
 
         assertEq(token.balanceOf(user), 899e6);
         assertEq(token.balanceOf(recipient), 100e6);
         assertEq(token.balanceOf(feeRecipient), 1e6);
     }
 
-    function test_executeTransfer_anyoneCanSubmitAValidlySignedTransfer() public {
+    function test_executeOps_anyoneCanSubmitAValidlySignedOp() public {
         _delegateUser();
 
-        bytes memory sig = _sign(address(token), recipient, 100e6, 0, 0, block.timestamp + 1 hours);
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = _transferCall(recipient, 100e6);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
 
         // A completely unrelated, untrusted address submits it - still works,
         // because authorization comes from the signature, not the caller.
         vm.prank(makeAddr("randomSubmitter"));
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 100e6, 0, block.timestamp + 1 hours, sig
-        );
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
 
         assertEq(token.balanceOf(recipient), 100e6);
     }
 
-    function test_executeTransfer_revertsForWrongSigner() public {
+    function test_executeOps_runsAllCallsAtomically() public {
         _delegateUser();
 
-        uint256 attackerKey = 0xbad;
-        bytes32 digest = keccak256(
-            abi.encode(user, block.chainid, address(token), recipient, 100e6, uint256(0), uint256(0), block.timestamp + 1 hours)
-        );
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(attackerKey, digest);
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](2);
+        calls[0] = PayfromDelegate.Call({
+            target: address(token),
+            value: 0,
+            data: abi.encodeCall(token.approve, (recipient, 100e6))
+        });
+        calls[1] = _transferCall(recipient, 100e6);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
+
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
+
+        assertEq(token.balanceOf(user), 900e6);
+        assertEq(token.balanceOf(recipient), 100e6);
+        // approve() and transfer() are independent ops - plain transfer()
+        // never touches the allowance approve() set (unlike transferFrom()).
+        assertEq(token.allowance(user, recipient), 100e6);
+    }
+
+    function test_executeOps_revertsWholeBatchIfOneCallFails() public {
+        _delegateUser();
+
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](2);
+        calls[0] = PayfromDelegate.Call({
+            target: address(token),
+            value: 0,
+            data: abi.encodeCall(token.approve, (recipient, 10_000e6))
+        });
+        // Transfer more than the wallet holds - must revert, taking the
+        // approve above down with it.
+        calls[1] = _transferCall(recipient, 10_000e6);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
+
+        vm.expectRevert(abi.encodeWithSelector(PayfromDelegate.CallFailed.selector, 1));
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
+
+        assertEq(token.allowance(user, recipient), 0);
+    }
+
+    function test_executeOps_revertsForWrongSigner() public {
+        _delegateUser();
+
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = _transferCall(recipient, 100e6);
+        bytes32 digest = keccak256(abi.encode(user, block.chainid, calls, uint256(0), block.timestamp + 1 hours));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xbad, digest);
         bytes memory badSig = abi.encodePacked(r, s, v);
 
         vm.expectRevert(PayfromDelegate.InvalidSignature.selector);
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 100e6, 0, block.timestamp + 1 hours, badSig
-        );
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, badSig);
     }
 
-    function test_executeTransfer_revertsOnReplay() public {
+    function test_executeOps_revertsOnReplay() public {
         _delegateUser();
 
-        bytes memory sig = _sign(address(token), recipient, 50e6, 0, 0, block.timestamp + 1 hours);
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = _transferCall(recipient, 50e6);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
 
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 50e6, 0, block.timestamp + 1 hours, sig
-        );
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
 
         vm.expectRevert(PayfromDelegate.InvalidSignature.selector);
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 50e6, 0, block.timestamp + 1 hours, sig
-        );
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
     }
 
-    function test_executeTransfer_revertsWhenExpired() public {
+    function test_executeOps_revertsWhenExpired() public {
         _delegateUser();
 
         uint256 deadline = block.timestamp + 1 hours;
-        bytes memory sig = _sign(address(token), recipient, 100e6, 0, 0, deadline);
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = _transferCall(recipient, 100e6);
+        bytes memory sig = _sign(calls, 0, deadline);
 
         vm.warp(deadline + 1);
 
         vm.expectRevert(PayfromDelegate.Expired.selector);
-        PayfromDelegate(payable(user)).executeTransfer(address(token), recipient, 100e6, 0, deadline, sig);
+        PayfromDelegate(payable(user)).executeOps(calls, deadline, sig);
     }
 
-    function test_executeTransfer_zeroFeeSkipsFeeRecipientTransfer() public {
+    function test_executeOps_revertsOnEmptyBatch() public {
         _delegateUser();
 
-        bytes memory sig = _sign(address(token), recipient, 100e6, 0, 0, block.timestamp + 1 hours);
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](0);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
 
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 100e6, 0, block.timestamp + 1 hours, sig
-        );
-
-        assertEq(token.balanceOf(feeRecipient), 0);
-        assertEq(token.balanceOf(recipient), 100e6);
+        vm.expectRevert(PayfromDelegate.EmptyBatch.selector);
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
     }
 
-    function test_executeTransfer_revertsWhenFeeExceedsAmount() public {
+    function test_executeOps_revertsWhenCallTargetsSelf() public {
         _delegateUser();
 
-        bytes memory sig = _sign(address(token), recipient, 100e6, 101e6, 0, block.timestamp + 1 hours);
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = PayfromDelegate.Call({target: user, value: 0, data: ""});
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
 
-        vm.expectRevert(PayfromDelegate.FeeExceedsAmount.selector);
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 100e6, 101e6, block.timestamp + 1 hours, sig
-        );
-    }
-
-    function test_executeTransfer_revertsOnZeroAmount() public {
-        _delegateUser();
-
-        bytes memory sig = _sign(address(token), recipient, 0, 0, 0, block.timestamp + 1 hours);
-
-        vm.expectRevert(PayfromDelegate.InvalidAmount.selector);
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 0, 0, block.timestamp + 1 hours, sig
-        );
+        vm.expectRevert(PayfromDelegate.InvalidAddress.selector);
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
     }
 
     function test_delegatedAccount_canReceivePlainNativeTransfer() public {
@@ -170,20 +198,13 @@ contract PayfromDelegateTest is Test {
         assertEq(user.balance, 1 ether);
     }
 
-    function test_feeRecipient_isImmutableAcrossDelegatedAccounts() public {
-        assertEq(delegateImpl.feeRecipient(), feeRecipient);
-
-        _delegateUser();
-        assertEq(PayfromDelegate(payable(user)).feeRecipient(), feeRecipient);
-    }
-
     function test_nonce_isPerWalletStorage() public {
         _delegateUser();
 
-        bytes memory sig = _sign(address(token), recipient, 10e6, 0, 0, block.timestamp + 1 hours);
-        PayfromDelegate(payable(user)).executeTransfer(
-            address(token), recipient, 10e6, 0, block.timestamp + 1 hours, sig
-        );
+        PayfromDelegate.Call[] memory calls = new PayfromDelegate.Call[](1);
+        calls[0] = _transferCall(recipient, 10e6);
+        bytes memory sig = _sign(calls, 0, block.timestamp + 1 hours);
+        PayfromDelegate(payable(user)).executeOps(calls, block.timestamp + 1 hours, sig);
 
         assertEq(PayfromDelegate(payable(user)).nonce(), 1);
         assertEq(delegateImpl.nonce(), 0);

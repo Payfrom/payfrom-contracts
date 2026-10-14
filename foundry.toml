@@ -10,11 +10,10 @@ via_ir = false  # Can enable for better optimization, but slower compilation
 
 remappings = [
     "@openzeppelin/=lib/openzeppelin-contracts/",
-    "@axelar-network/=lib/axelar-gmp-sdk-solidity/"
 ]
 
 # Gas reporting
-gas_reports = ["PayFromRouter"]
+gas_reports = ["PayfromDelegate"]
 
 # Formatter settings
 [fmt]

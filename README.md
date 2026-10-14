@@ -1,6 +1,27 @@
 ## PayFrom Contracts
 
-PayFromRouter is a smart contract that spilt funds between merchant account(99%) and PayFrom(1%).
+### PayfromDelegate (sponsored transactions via EIP-7702)
+
+Minimal EIP-7702 delegate contract. A PayFrom-managed wallet (EOA) delegates
+its code to this contract, after which anyone (in practice the sponsor
+wallet, which pays the gas) can call `executeOps(calls, deadline, signature)`
+to run a batch of calls from the wallet, such as an ERC-20 transfer or an
+approve plus a swap or bridge deposit, without the wallet holding native gas.
+
+Authorization comes only from the wallet's own signature, never from the
+caller. The signed digest is
+
+```
+keccak256(abi.encode(address(this), block.chainid, calls, nonce, deadline))
+```
+
+so a signature is bound to one wallet, one chain, the exact calls, a single
+use (`nonce` increments before any call runs) and a deadline. Calls to the
+wallet itself or the zero address are rejected, and a failing call reverts
+the whole batch.
+
+The contract has no constructor arguments or roles, so the same bytecode is
+deployed once per chain.
 
 ### Build
 
@@ -17,51 +38,18 @@ $ forge test
 ### Format
 
 ```shell
-
 $ forge fmt
 ```
 
-### Adding Private Key
-NEVER ADD PRIVATE KEY TO .env file; DO THIS INSTEAD
+### Adding a deployer key
+
+Never put a private key in `.env`; import it into an encrypted keystore instead:
+
 ```shell
 $ cast wallet import <account_name> --interactive
 ```
 
-###  Deploy (will prompt for password - SECURE!)
-
-```shell
-$ forge script script/Deploy.s.sol:DeployScript \
-  --rpc-url <rpc_endpoints> \
-  --account <account_name> \
-  --sender $(cast wallet address --account <account_name>) \
-  --broadcast \
-  --verify \
-  -vvvv
-```
-
-### To add a supported token
-```shell
-$ cast send <ROUTER_ADDRESS> \
-  "addSupportedToken(address)" \
-  <TOKEN_ADDRESS> \
-  --rpc-url <rpc_endpoints> \
-  --private-key $PRIVATE_KEY # only in test, never enter private keys directly use `cast` instead
-```
-
-## PayfromDelegate (gasless transfers via EIP-7702)
-
-Minimal EIP-7702 delegate contract: a user's EOA signs a one-time authorization
-pointing at this contract's code, after which the backend's sponsor wallet can
-call `executeTransfer` to move that EOA's own token balance (no `approve()`
-needed) while paying the gas itself. `relayer` is `immutable` - EIP-7702
-delegated accounts run this code against their own blank storage, not this
-contract's, so anything the relayer-gating depends on has to be baked into the
-bytecode rather than set via a mutable storage variable. Deploy one instance
-per chain per environment (test/live have separate sponsor wallets, so
-separate deployments).
-
-Set `SPONSOR_WALLET_ADDRESS` in `.env` to the sponsor wallet address for the
-target environment before deploying.
+### Deploy
 
 ```shell
 $ forge script script/DeployPayfromDelegate.s.sol:DeployPayfromDelegate \
